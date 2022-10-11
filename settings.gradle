@@ -40,6 +40,7 @@ include "framework-bom"
 include "framework-platform"
 include "integration-tests"
 
+
 rootProject.name = "spring"
 rootProject.children.each {project ->
 	project.buildFileName = "${project.name}.gradle"
@@ -59,3 +60,4 @@ settings.gradle.projectsLoaded {
 		}
 	}
 }
+
