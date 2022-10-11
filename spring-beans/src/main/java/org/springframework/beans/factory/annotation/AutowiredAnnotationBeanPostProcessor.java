@@ -309,6 +309,7 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 	}
 
 	private InjectionMetadata findInjectionMetadata(String beanName, Class<?> beanType, RootBeanDefinition beanDefinition) {
+		// 查找类中使用了 @Autowired、@Value、@Inject 注解的字段和方法，并将这些字段和方法封装到"注入元数据"对象中，后面的自动装配就是通过这个对象来完成的
 		InjectionMetadata metadata = findAutowiringMetadata(beanName, beanType, null);
 		metadata.checkConfigMembers(beanDefinition);
 		return metadata;
@@ -518,6 +519,7 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 		// Fall back to class name as cache key, for backwards compatibility with custom callers.
 		String cacheKey = (StringUtils.hasLength(beanName) ? beanName : clazz.getName());
 		// Quick check on the concurrent map first, with minimal locking.
+		// 先从缓存中找，在属性填充之前读取这些字段、方法合并到Bean定义中，后面进行属性填充时，就直接从这个缓存中获取了。
 		InjectionMetadata metadata = this.injectionMetadataCache.get(cacheKey);
 		if (InjectionMetadata.needsRefresh(metadata, clazz)) {
 			synchronized (this.injectionMetadataCache) {
@@ -526,6 +528,7 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 					if (metadata != null) {
 						metadata.clear(pvs);
 					}
+					// 查找类中使用了 @Autowired、@Value、@Inject 注解的字段和方法，并将这些字段和方法封装到"注入元数据"对象中
 					metadata = buildAutowiringMetadata(clazz);
 					this.injectionMetadataCache.put(cacheKey, metadata);
 				}
@@ -534,6 +537,7 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 		return metadata;
 	}
 
+	// 获取使用了 @Autowired、@Value、@Inject 注解的方法、字段的主要代码
 	private InjectionMetadata buildAutowiringMetadata(Class<?> clazz) {
 		if (!AnnotationUtils.isCandidateClass(clazz, this.autowiredAnnotationTypes)) {
 			return InjectionMetadata.EMPTY;
@@ -545,8 +549,10 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 		do {
 			final List<InjectionMetadata.InjectedElement> currElements = new ArrayList<>();
 
+			// 遍历类中的所有字段，查找是否有 @Autowired、@Value、@Inject 注解的字段，并添加到列表
 			ReflectionUtils.doWithLocalFields(targetClass, field -> {
 				MergedAnnotation<?> ann = findAutowiredAnnotation(field);
+				// 先获取字段上的所有注解，然后再匹配查找字段上的@Autowired、@Value、@Inject注解，有则返回，没有则为null
 				if (ann != null) {
 					if (Modifier.isStatic(field.getModifiers())) {
 						if (logger.isInfoEnabled()) {
@@ -554,12 +560,19 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 						}
 						return;
 					}
+					// 获取注解的 required 属性值，如果没有这个属性，默认为true。表示是否必填
 					boolean required = determineRequiredStatus(ann);
 					currElements.add(new AutowiredFieldElement(field, required));
 				}
 			});
 
+			// 遍历类中的所有方法，查找是否有 @Autowired、@Value、@Inject 注解的方法，并添加到列表
 			ReflectionUtils.doWithLocalMethods(targetClass, method -> {
+				/*
+				 * 此处的桥接方法，并非设计模式中的桥接模式
+				 * 当父类/接口方法的参数是泛型，而子类/实现类的方法参数是具体的类型时，编译器在编译的时候会生成一个桥接方法，类似于编译器自动给我们重载了一个方法
+				 * 或者当子类重写父类的方法时，如果子类的参数类型与父类的参数类型不一样，编译器也会自动生成一个桥接方法
+				 */
 				Method bridgedMethod = BridgeMethodResolver.findBridgedMethod(method);
 				if (!BridgeMethodResolver.isVisibilityBridgeMethodPair(method, bridgedMethod)) {
 					return;
@@ -713,6 +726,12 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 			Object value;
 			if (this.cached) {
 				try {
+					/*
+					 * 已经缓存了参数值，则直接取缓存。
+					 * 如果缓存值的类型是 ShortcutDependencyDescriptor，则可以直接取值
+					 * 如果缓存值的类型是 DependencyDescriptor ，还是需要重新解析的
+					 * 重新解析也是调用 beanFactory.resolveDependency 方法
+					 */
 					value = resolvedCachedArgument(beanName, this.cachedFieldValue);
 				}
 				catch (NoSuchBeanDefinitionException ex) {
@@ -731,6 +750,7 @@ public class AutowiredAnnotationBeanPostProcessor implements SmartInstantiationA
 
 		@Nullable
 		private Object resolveFieldValue(Field field, Object bean, @Nullable String beanName) {
+			// 属性的一些信息，例如属性的名称、类型等
 			DependencyDescriptor desc = new DependencyDescriptor(field, this.required);
 			desc.setContainingClass(bean.getClass());
 			Set<String> autowiredBeanNames = new LinkedHashSet<>(1);

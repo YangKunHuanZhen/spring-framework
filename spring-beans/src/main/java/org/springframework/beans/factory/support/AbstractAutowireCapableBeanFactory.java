@@ -566,6 +566,14 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			mbd.resolvedTargetType = beanType;
 		}
 
+		/*
+		 * 合并Bean定义
+		 * CommonAnnotationBeanPostProcessor
+		 * 查找类中使用了 @PostConstruct 和 @PreDestroy 注解的方法，并注册到Bean定义中，这类方法在Bean初始化和销毁时被执行
+		 * 检查类中使用了 @Resource @EJB @WebServiceRef 注解的字段和方法，并注册到Bean定义中
+		 * AutowiredAnnotationBeanPostProcessor
+		 * 查找类上使用了 @Autowired、@Value、@Inject 注解的字段和方法，将这些字段和方法添加到Bean定义中
+		 */
 		// Allow post-processors to modify the merged bean definition.
 		synchronized (mbd.postProcessingLock) {
 			if (!mbd.postProcessed) {
@@ -589,6 +597,14 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 				logger.trace("Eagerly caching bean '" + beanName +
 						"' to allow for resolving potential circular references");
 			}
+			/*
+			 * 解决循环引用的问题，将早期对象包装成一个ObjectFactory对象，并缓存到三级缓存中(key是beanName，value是一个ObjectFactory)，提前暴露对象的引用
+			 * 当从三级缓存中获取早期对象，调用ObjectFactory.getObject()方法时，会执行 getEarlyBeanReference 方法，
+			 * 若启用了AOP功能，会执行 AbstractAutoProxyCreator.getEarlyBeanReference() 方法，如果Bean存在匹配的切点，最终返回一个AOP代理对象
+			 * 注意：能够生成AOP代理对象的处理类有多个，此处只能返回通过 AbstractAutoProxyCreator 生成的AOP对象，若是需要使用其它类生成AOP代理对象，这里是无法处理的，返回的是原对象
+			 * 例如，AsyncAnnotationBeanPostProcessor 为使用了 @Async 注解的Bean生成代理对象，此处是无法处理的，在Bean初始化之后通过 BeanPostProcessor 的后置处理方法生成代理
+			 */
+			//todo 调用ObjectFactory.getObject()方法时 返回aop代理对象，在哪里实现的
 			addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
 		}
 
@@ -608,20 +624,51 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		}
 
 		if (earlySingletonExposure) {
+			//只从二级缓存里拿，如果拿到，说明是循环依赖，如果没有拿到，说明不是循环依赖
+			//getSingleton每一次从三级缓存获取，都会从三级缓存中移除，添加到二级缓存，所以如果从二级缓存里获取不到，说明存在于三级缓存，
+			//存在于三级缓存，那么getSingleton获取缓存方法就没有被其他bean初始化调用过，不存在循环依赖，反之则是循环依赖
 			Object earlySingletonReference = getSingleton(beanName, false);
 			if (earlySingletonReference != null) {
+				/*
+				 * 进入这里，就说明存在循环依赖
+				 * exposedObject 是初始化之后的对象，它可能是一个 AbstractAutoProxyCreator 或者其它处理器(AsyncAnnotationBeanPostProcessor)生成的AOP代理对象。
+				 * 而 bean 指向的是刚实例化的对象，如果两者相等，说明bean在初始化的过程中没有产生代理对象，
+				 * 于是将 exposedObject 指向二级缓存中的对象，此对象可能是原生的bean，也可能是通过 AbstractAutoProxyCreator 生成的代理对象，
+				 * 所以这一步走完之后， exposedObject 是指向终的Bean实例了，如果需要代理则已经是代理对象，如果无需代理则是原生Bean。
+				 * 如果此处不相等，则说明在初始化的过程中产生了代理对象，并且不是 AbstractAutoProxyCreator 生成的，可能是 AsyncAnnotationBeanPostProcessor。
+				 */
 				if (exposedObject == bean) {
 					exposedObject = earlySingletonReference;
 				}
+				/*
+				 * allowRawInjectionDespiteWrapping 是否在循环依赖的情况下注入原始 bean 实例，默认为 false
+				 * hasDependentBean() 方法用于判断是否有Bean依赖了当前Bean，例如这里判断是否有Bean依赖ClassA
+				 * 进入这里，说明循环依赖中的Bean在初始化的时候，被其他BeanPostProcessor处理器生成了代理对象，
+				 * 所以这一步校验的是 依赖当前bean 的 其它bean是否已经创建完成，如果创建完成，那么它所依赖的Bean与实际的Bean不相同，需要抛出异常。
+				 * 对上面的例子做个扩展进行说明，ClassA中使用了@Async注解，所以在初始化的时候被 AsyncAnnotationBeanPostProcessor 生成了代理对象，
+				 * 而ClassB中注入的是ClassA的原生对象，两个对象不相同，所以抛出异常。
+				 */
 				else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
+					// 依赖当前 Bean （ClassA） 的 其它beanName（ClassB）
 					String[] dependentBeans = getDependentBeans(beanName);
+					// 用于保存已经创建完成的beanName，上面的例子中 ClassB 就会被保存到这里
 					Set<String> actualDependentBeans = new LinkedHashSet<>(dependentBeans.length);
 					for (String dependentBean : dependentBeans) {
+						/*
+						 * 判断ClassB是否已经创建完成
+						 * ClassB 已经创建完成，removeSingletonIfCreatedForTypeCheckOnly方法返回false，ClassB加入集合；
+						 * ClassB 未创建完成，尝试清除ClassB在三个缓存中的值，所以ClassB在后续会重新走一遍创建流程，removeSingletonIfCreatedForTypeCheckOnly返回true，ClassB不加入集合
+						 */
 						if (!removeSingletonIfCreatedForTypeCheckOnly(dependentBean)) {
 							actualDependentBeans.add(dependentBean);
 						}
 					}
 					if (!actualDependentBeans.isEmpty()) {
+						/*
+						 * 以上面的例子说明这个异常：
+						 * 名称为“ClassA”的 Bean 已作为循环依赖的一部分注入到其他 bean [ClassB] 中，但在注入之后，ClassA被生成了AOP代理对象。
+						 * 这意味着 ClassB 依赖的不是 ClassA 的最终版本。
+						 */
 						throw new BeanCurrentlyInCreationException(beanName,
 								"Bean with name '" + beanName + "' has been injected into other beans [" +
 								StringUtils.collectionToCommaDelimitedString(actualDependentBeans) +
@@ -1079,6 +1126,15 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	 */
 	protected void applyMergedBeanDefinitionPostProcessors(RootBeanDefinition mbd, Class<?> beanType, String beanName) {
 		for (MergedBeanDefinitionPostProcessor processor : getBeanPostProcessorCache().mergedDefinition) {
+			/*
+			 * CommonAnnotationBeanPostProcessor
+			 * 查找类中使用了 @PostConstruct 和 @PreDestroy 注解的方法，并注册到Bean定义
+			 * 查找类中使用了 @Resource @EJB @WebServiceRef 注解的字段和方法，并注册到Bean定义
+			 * AutowiredAnnotationBeanPostProcessor
+			 * 查找类中使用了 @Autowired、@Value、@Inject 注解的字段和方法，并注册到Bean定义
+			 * PersistenceAnnotationBeanPostProcessor
+			 * 查找类中使用了 @PersistenceContext、PersistenceUnit 注解的字段和方法，并注册到Bean定义
+			 */
 			processor.postProcessMergedBeanDefinition(mbd, beanType, beanName);
 		}
 	}
@@ -1366,17 +1422,36 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		// Give any InstantiationAwareBeanPostProcessors the opportunity to modify the
 		// state of the bean before properties are set. This can be used, for example,
 		// to support styles of field injection.
+		/*
+		 * 到这里bean已经实例化完成了，但是还没给属性设值。
+		 * InstantiationAwareBeanPostProcessor 的实现类可以在这里对 bean 进行状态修改。
+		 * 官方的解释是：让用户可以自定义属性注入。这是 Spring 留给我们自己扩展的接口。
+		 * 默认情况下，这一部分代码什么都没做
+		 */
 		if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
 			for (InstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().instantiationAware) {
+				/*
+				 * 在Bean实例化之后，属性填充之前调用
+				 * 如果该方法返回false，代表不需要进行后续的属性设值；返回true，则进行正常的属性设置。
+				 * CommonAnnotationBeanPostProcessor、PersistenceAnnotationBeanPostProcessor、InstantiationAwareBeanPostProcessorAdapter 什么都没有做，直接返回true
+				 * ConfigurationClassPostProcessor#ImportAwareBeanPostProcessor 继承 InstantiationAwareBeanPostProcessorAdapter，没有重写该方法，所以也直接返回true
+				 */
 				if (!bp.postProcessAfterInstantiation(bw.getWrappedInstance(), beanName)) {
 					return;
 				}
 			}
 		}
 
+		// 在xml中通过 property 子标签显式定义的属性值
 		PropertyValues pvs = (mbd.hasPropertyValues() ? mbd.getPropertyValues() : null);
-
+		//// 显式配置的自动注入模式，默认值0。
 		int resolvedAutowireMode = mbd.getResolvedAutowireMode();
+		/*
+		 * 按名称或者类型进行自动注入。
+		 * 使用注解、JavaConfig配置的Bean，自动注入模式默认都是0。
+		 * xml中定义的Bean，则由bean标签的autowire属性决定。
+		 * 所以，默认情况下是不走这里的。
+		 */
 		if (resolvedAutowireMode == AUTOWIRE_BY_NAME || resolvedAutowireMode == AUTOWIRE_BY_TYPE) {
 			MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
 			// Add property values based on autowire by name if applicable.
@@ -1397,7 +1472,17 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			if (pvs == null) {
 				pvs = mbd.getPropertyValues();
 			}
+			// 调用 InstantiationAwareBeanPostProcessor 处理器进行属性填充
 			for (InstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().instantiationAware) {
+				/*
+				 * ConfigurationClassPostProcessor#ImportAwareBeanPostProcessor 判断 Bean 是否实现了 EnhancedConfiguration 接口，如果是则回调方法，设置Bean工厂到Bean中，然后直接返回参数 pvs
+				 * PersistenceAnnotationBeanPostProcessor 处理 @PersistenceContext 和 @PersistenceUnit 注解的注入
+				 * ScriptFactoryPostProcessor 则是直接返回参数 pvs
+				 * CommonAnnotationBeanPostProcessor 处理 @Resource @EJB @WebServiceRef 注解的属性填充
+				 * AutowiredAnnotationBeanPostProcessor 处理 @Autowired、@Value、@Inject 注解的属性填充
+				 * CommonAnnotationBeanPostProcessor和AutowiredAnnotationBeanPostProcessor最终都会调用到 InjectionMetadata.inject() 的同一个方法，由此可见，这些注解的注入方式是一样的
+				 * 显式定义的属性不在这里处理
+				 */
 				PropertyValues pvsToUse = bp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
 				if (pvsToUse == null) {
 					return;
