@@ -557,6 +557,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		if (mbd.isSingleton()) {
 			instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
 		}
+		// 第一步：实例化Bean
+		// 使用合适的实例化策略来创建新的实例：工厂方法、带参的构造函数、无参构造函数。默认调用无参构造函数创建实例。
 		if (instanceWrapper == null) {
 			instanceWrapper = createBeanInstance(beanName, mbd, args);
 		}
@@ -612,6 +614,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 		Object exposedObject = bean;
 		try {
 			populateBean(beanName, mbd, instanceWrapper);
+			// 第三步：初始化Bean，调用初始化方法，完成bean的初始化操作（AOP代理发生在这个步骤）
+			// 如果指定了 init-method 方法、实现了 InitializingBean 接口 都会在这里被调用
 			exposedObject = initializeBean(beanName, exposedObject, mbd);
 		}
 		catch (Throwable ex) {
