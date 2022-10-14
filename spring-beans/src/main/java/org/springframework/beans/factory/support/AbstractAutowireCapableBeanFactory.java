@@ -1831,10 +1831,15 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 
 		Object wrappedBean = bean;
 		if (mbd == null || !mbd.isSynthetic()) {
+			// 调用 BeanPostProcessor 的 postProcessBeforeInitialization 方法（Bean后置处理器的前处理方法）
+			// 如果Bean实现了EnvironmentAware、EmbeddedValueResolverAware、ResourceLoaderAware、ApplicationEventPublisherAware
+			// MessageSourceAware、ApplicationContextAware接口，会在这进行回调
+			// 如果Bean配置了@PostConstruct会在这里调用
 			wrappedBean = applyBeanPostProcessorsBeforeInitialization(wrappedBean, beanName);
 		}
 
 		try {
+			// 调用 bean 定义中的 init-method，或者如果 bean 实现了 InitializingBean 接口，调用 afterPropertiesSet() 方法
 			invokeInitMethods(beanName, wrappedBean, mbd);
 		}
 		catch (Throwable ex) {
@@ -1842,6 +1847,9 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 					(mbd != null ? mbd.getResourceDescription() : null), beanName, ex.getMessage(), ex);
 		}
 		if (mbd == null || !mbd.isSynthetic()) {
+			// 调用 BeanPostProcessor 的 postProcessAfterInitialization 方法（Bean后置处理器的后处理方法）
+			// AOP动态代理对象一般在这里创建
+			// AnnotationAwareAspectJAutoProxyCreator.postProcessAfterInitialization 创建代理对象
 			wrappedBean = applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName);
 		}
 
